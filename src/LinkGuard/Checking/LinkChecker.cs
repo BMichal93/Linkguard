@@ -142,6 +142,7 @@ public sealed class LinkChecker(HttpClient httpClient, int maxConcurrency)
                 continue;
             }
 
+            var discoveredLinks = await ExtractLinksIfInternalHtmlAsync(response, kind, status, current, cancellationToken);
             response.Dispose();
             return new CheckResult
             {
@@ -150,8 +151,25 @@ public sealed class LinkChecker(HttpClient httpClient, int maxConcurrency)
                 StatusCode = status,
                 RedirectChain = chain,
                 Attempts = attemptsUsed,
+                DiscoveredLinks = discoveredLinks,
             };
         }
+    }
+
+    // Internal checks GET the body anyway, so link extraction is a free byproduct - it feeds the
+    // referrer map for reporting and surfaces external targets, without ever recursing into them.
+    private static async Task<IReadOnlyList<Uri>> ExtractLinksIfInternalHtmlAsync(
+        HttpResponseMessage response, LinkKind kind, int status, Uri pageUrl, CancellationToken cancellationToken)
+    {
+        if (kind != LinkKind.Internal || status is < 200 or >= 300)
+            return [];
+
+        var contentType = response.Content.Headers.ContentType?.MediaType;
+        if (contentType is not null && !contentType.Contains("html", StringComparison.OrdinalIgnoreCase))
+            return [];
+
+        var html = await response.Content.ReadAsStringAsync(cancellationToken);
+        return await LinkExtractor.ExtractHrefsAsync(html, pageUrl, cancellationToken);
     }
 
     private async Task<(HttpResponseMessage? Response, string? Error, int Attempts)> SendWithRetryAsync(

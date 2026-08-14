@@ -26,10 +26,24 @@ public sealed record CheckResult
     public string? Error { get; init; }
     public int Attempts { get; init; } = 1;
 
+    // Outbound links found in an internal page's body - used to build the referrer map for reporting
+    // and, for external links, as check targets. Never populated for external checks (one level deep only).
+    public IReadOnlyList<Uri> DiscoveredLinks { get; init; } = [];
+
     // A broken external link warns instead of failing - a third-party site being down at 2am must not block a release.
     public CheckOutcome Outcome => Error is not null || StatusCode is >= 400
         ? (Kind == LinkKind.Internal ? CheckOutcome.Fail : CheckOutcome.Warn)
         : CheckOutcome.Pass;
+}
+
+public sealed record LinkGuardReport
+{
+    public required IReadOnlyList<CheckResult> Results { get; init; }
+    public required IReadOnlyDictionary<string, IReadOnlyList<Uri>> Referrers { get; init; }
+    public required TimeSpan Duration { get; init; }
+
+    public IReadOnlyList<Uri> ReferrersFor(Uri url) =>
+        Referrers.TryGetValue(Checking.UrlNormaliser.NormalisedKey(url), out var list) ? list : [];
 }
 
 public static class ExitCodes
