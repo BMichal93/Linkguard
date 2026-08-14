@@ -1,0 +1,21 @@
+# Link check step - run after the staging deploy and before the push to live.
+#
+# The CF-IPCountry header pins the geo-redirect middleware to one country. Without it
+# the crawler gets bounced between locale roots and the results are meaningless.
+#
+# condition: always() on the publish step matters - otherwise the report is discarded
+# on exactly the runs where it is needed.
+
+- script: |
+    dotnet tool install --global linkguard --add-source $(Pipeline.Workspace)/nuget
+    linkguard \
+      --url $(StagingUrl) \
+      --max-concurrency 8 \
+      --junit $(Agent.TempDirectory)/linkguard.xml \
+      --header "CF-IPCountry: PL"
+  displayName: Link check staging
+- task: PublishTestResults@2
+  condition: always()
+  inputs:
+    testResultsFormat: JUnit
+    testResultsFiles: $(Agent.TempDirectory)/linkguard.xml
