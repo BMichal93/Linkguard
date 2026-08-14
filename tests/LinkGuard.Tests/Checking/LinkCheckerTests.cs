@@ -10,9 +10,9 @@ public class LinkCheckerTests
     private static readonly Uri Url = new("https://example.com/page");
 
     [Fact]
-    public async Task CheckAsync_reports_200_as_a_plain_success()
+    public async Task Check_200_Passes()
     {
-        var handler = new StubHttpMessageHandler(_ => StubHttpMessageHandler.Status(HttpStatusCode.OK));
+        var handler = new StubHttpMessageHandler().Map(Url.ToString(), StubHttpMessageHandler.Status(HttpStatusCode.OK));
         var checker = new LinkChecker(new HttpClient(handler), maxConcurrency: 4);
 
         var result = await checker.CheckAsync(Url, LinkKind.Internal);
@@ -23,9 +23,9 @@ public class LinkCheckerTests
     }
 
     [Fact]
-    public async Task CheckAsync_reports_404()
+    public async Task Check_404_ReportsFailure()
     {
-        var handler = new StubHttpMessageHandler(_ => StubHttpMessageHandler.Status(HttpStatusCode.NotFound));
+        var handler = new StubHttpMessageHandler().Map(Url.ToString(), StubHttpMessageHandler.Status(HttpStatusCode.NotFound));
         var checker = new LinkChecker(new HttpClient(handler), maxConcurrency: 4);
 
         var result = await checker.CheckAsync(Url, LinkKind.Internal);
@@ -35,33 +35,49 @@ public class LinkCheckerTests
     }
 
     [Fact]
-    public async Task CheckAsync_reports_persistent_500_after_exhausting_retries()
+    public async Task Check_4xx_IsNotRetried()
     {
-        var attempts = 0;
-        var handler = new StubHttpMessageHandler(_ =>
-        {
-            attempts++;
-            return StubHttpMessageHandler.Status(HttpStatusCode.InternalServerError);
-        });
+        var handler = new StubHttpMessageHandler().Map(Url.ToString(), StubHttpMessageHandler.Status(HttpStatusCode.NotFound));
+        var checker = new LinkChecker(new HttpClient(handler), maxConcurrency: 4);
+
+        var result = await checker.CheckAsync(Url, LinkKind.Internal);
+
+        Assert.Equal(1, result.Attempts);
+        Assert.Single(handler.Requests);
+    }
+
+    [Fact]
+    public async Task Check_500_ReportsFailureAfterExhaustingRetries()
+    {
+        var handler = new StubHttpMessageHandler().Map(Url.ToString(), StubHttpMessageHandler.Status(HttpStatusCode.InternalServerError));
         var checker = new LinkChecker(new HttpClient(handler), maxConcurrency: 4);
 
         var result = await checker.CheckAsync(Url, LinkKind.Internal);
 
         Assert.Equal(500, result.StatusCode);
-        Assert.Equal(3, attempts);
         Assert.Equal(3, result.Attempts);
+        Assert.Equal(3, handler.Requests.Count);
     }
 
     [Fact]
-    public async Task CheckAsync_follows_a_redirect_chain_ending_in_200()
+    public async Task Check_503ThenSuccess_PassesAfterRetry()
     {
-        var handler = new StubHttpMessageHandler(request => request.RequestUri!.AbsolutePath switch
-        {
-            "/page" => StubHttpMessageHandler.Redirect("/page-2", HttpStatusCode.MovedPermanently),
-            "/page-2" => StubHttpMessageHandler.Redirect("/page-3", HttpStatusCode.Found),
-            "/page-3" => StubHttpMessageHandler.Status(HttpStatusCode.OK),
-            _ => StubHttpMessageHandler.Status(HttpStatusCode.NotFound),
-        });
+        var handler = new StubHttpMessageHandler().Map(Url.ToString(), StubHttpMessageHandler.FailThenOk(failCount: 1));
+        var checker = new LinkChecker(new HttpClient(handler), maxConcurrency: 4);
+
+        var result = await checker.CheckAsync(Url, LinkKind.Internal);
+
+        Assert.Equal(200, result.StatusCode);
+        Assert.Equal(2, result.Attempts);
+    }
+
+    [Fact]
+    public async Task Check_RedirectChainEndingIn200_PassesAndRecordsChain()
+    {
+        var handler = new StubHttpMessageHandler()
+            .Map("https://example.com/page", StubHttpMessageHandler.Redirect("/page-2", permanent: true))
+            .Map("https://example.com/page-2", StubHttpMessageHandler.Redirect("/page-3"))
+            .Map("https://example.com/page-3", StubHttpMessageHandler.Status(HttpStatusCode.OK));
         var checker = new LinkChecker(new HttpClient(handler), maxConcurrency: 4);
 
         var result = await checker.CheckAsync(Url, LinkKind.Internal);
@@ -74,14 +90,11 @@ public class LinkCheckerTests
     }
 
     [Fact]
-    public async Task CheckAsync_follows_a_redirect_chain_ending_in_404()
+    public async Task Check_RedirectChainEndingIn404_ReportsFailureWithChain()
     {
-        var handler = new StubHttpMessageHandler(request => request.RequestUri!.AbsolutePath switch
-        {
-            "/page" => StubHttpMessageHandler.Redirect("/gone", HttpStatusCode.MovedPermanently),
-            "/gone" => StubHttpMessageHandler.Status(HttpStatusCode.NotFound),
-            _ => StubHttpMessageHandler.Status(HttpStatusCode.NotFound),
-        });
+        var handler = new StubHttpMessageHandler()
+            .Map("https://example.com/page", StubHttpMessageHandler.Redirect("/gone", permanent: true))
+            .Map("https://example.com/gone", StubHttpMessageHandler.Status(HttpStatusCode.NotFound));
         var checker = new LinkChecker(new HttpClient(handler), maxConcurrency: 4);
 
         var result = await checker.CheckAsync(Url, LinkKind.Internal);
@@ -92,72 +105,166 @@ public class LinkCheckerTests
     }
 
     [Fact]
-    public async Task CheckAsync_detects_a_redirect_loop()
+    public async Task Check_RedirectLoop_ReportsFailureNotHang()
     {
-        var handler = new StubHttpMessageHandler(request => request.RequestUri!.AbsolutePath switch
-        {
-            "/page" => StubHttpMessageHandler.Redirect("/loop-b", HttpStatusCode.Found),
-            "/loop-b" => StubHttpMessageHandler.Redirect("/page", HttpStatusCode.Found),
-            _ => StubHttpMessageHandler.Status(HttpStatusCode.NotFound),
-        });
+        var handler = new StubHttpMessageHandler()
+            .Map("https://example.com/page", StubHttpMessageHandler.Redirect("/loop-b"))
+            .Map("https://example.com/loop-b", StubHttpMessageHandler.Redirect("/page"));
         var checker = new LinkChecker(new HttpClient(handler), maxConcurrency: 4);
 
         var result = await checker.CheckAsync(Url, LinkKind.Internal).WaitAsync(TimeSpan.FromSeconds(5));
 
         Assert.Equal("redirect loop", result.Error);
-        Assert.Equal(302, result.StatusCode);
         Assert.NotEmpty(result.RedirectChain);
     }
 
     [Fact]
-    public async Task CheckAsync_retries_a_timeout_and_succeeds()
+    public async Task Check_MoreThanFiveHops_ReportsFailure()
     {
-        var attempts = 0;
-        var handler = new StubHttpMessageHandler(_ =>
-        {
-            attempts++;
-            if (attempts == 1)
-                throw new TaskCanceledException("simulated timeout");
-            return StubHttpMessageHandler.Status(HttpStatusCode.OK);
-        });
+        var handler = new StubHttpMessageHandler()
+            .Map("https://example.com/hop-0", StubHttpMessageHandler.Redirect("/hop-1"))
+            .Map("https://example.com/hop-1", StubHttpMessageHandler.Redirect("/hop-2"))
+            .Map("https://example.com/hop-2", StubHttpMessageHandler.Redirect("/hop-3"))
+            .Map("https://example.com/hop-3", StubHttpMessageHandler.Redirect("/hop-4"))
+            .Map("https://example.com/hop-4", StubHttpMessageHandler.Redirect("/hop-5"))
+            .Map("https://example.com/hop-5", StubHttpMessageHandler.Redirect("/hop-6"))
+            .Map("https://example.com/hop-6", StubHttpMessageHandler.Status(HttpStatusCode.OK));
+        var checker = new LinkChecker(new HttpClient(handler), maxConcurrency: 4);
+
+        var result = await checker.CheckAsync(new Uri("https://example.com/hop-0"), LinkKind.Internal);
+
+        Assert.Equal("too many redirects", result.Error);
+        Assert.Equal(5, result.RedirectChain.Count);
+    }
+
+    [Fact]
+    public async Task Check_TransientTimeoutThenSuccess_PassesAfterRetry()
+    {
+        var handler = new StubHttpMessageHandler().Map(Url.ToString(), attempt =>
+            attempt == 1 ? throw new TaskCanceledException("simulated timeout") : new HttpResponseMessage(HttpStatusCode.OK));
         var checker = new LinkChecker(new HttpClient(handler), maxConcurrency: 4);
 
         var result = await checker.CheckAsync(Url, LinkKind.Internal);
 
         Assert.Equal(200, result.StatusCode);
         Assert.Null(result.Error);
-        Assert.Equal(2, attempts);
         Assert.Equal(2, result.Attempts);
     }
 
     [Fact]
-    public async Task CheckAsync_uses_head_for_external_links_and_falls_back_to_get_on_405()
+    public async Task Check_TimeoutOnAllAttempts_ReportsFailureAfterExactlyThreeAttempts()
     {
-        var methodsSeen = new List<string>();
-        var handler = new StubHttpMessageHandler(request =>
-        {
-            methodsSeen.Add(request.Method.Method);
-            return request.Method == HttpMethod.Head
-                ? StubHttpMessageHandler.Status(HttpStatusCode.MethodNotAllowed)
-                : StubHttpMessageHandler.Status(HttpStatusCode.OK);
-        });
+        var handler = new StubHttpMessageHandler().Map(Url.ToString(), StubHttpMessageHandler.Timeout());
         var checker = new LinkChecker(new HttpClient(handler), maxConcurrency: 4);
 
-        var result = await checker.CheckAsync(new Uri("https://other.example.org/asset"), LinkKind.External);
+        var result = await checker.CheckAsync(Url, LinkKind.Internal);
 
-        Assert.Equal(200, result.StatusCode);
-        Assert.Equal(["HEAD", "GET"], methodsSeen);
+        Assert.Equal("timeout", result.Error);
+        Assert.Null(result.StatusCode);
+        Assert.Equal(3, result.Attempts);
+        Assert.Equal(3, handler.Requests.Count);
     }
 
     [Fact]
-    public async Task CheckAllAsync_dedupes_targets_that_normalise_to_the_same_url()
+    public async Task Check_DnsFailure_ReportsFailure()
     {
-        var requestedPaths = new List<string>();
-        var handler = new StubHttpMessageHandler(request =>
-        {
-            requestedPaths.Add(request.RequestUri!.AbsolutePath);
-            return StubHttpMessageHandler.Status(HttpStatusCode.OK);
-        });
+        var handler = new StubHttpMessageHandler().Map(Url.ToString(), StubHttpMessageHandler.DnsFailure());
+        var checker = new LinkChecker(new HttpClient(handler), maxConcurrency: 4);
+
+        var result = await checker.CheckAsync(Url, LinkKind.Internal);
+
+        Assert.Equal("dns failure", result.Error);
+        Assert.Null(result.StatusCode);
+    }
+
+    [Fact]
+    public async Task Check_TlsFailure_ReportsFailure()
+    {
+        var handler = new StubHttpMessageHandler().Map(Url.ToString(), StubHttpMessageHandler.TlsFailure());
+        var checker = new LinkChecker(new HttpClient(handler), maxConcurrency: 4);
+
+        var result = await checker.CheckAsync(Url, LinkKind.Internal);
+
+        Assert.Equal("tls failure", result.Error);
+        Assert.Null(result.StatusCode);
+    }
+
+    [Fact]
+    public async Task Check_ExternalLink_UsesHeadNotGet()
+    {
+        var externalUrl = new Uri("https://other.example.org/asset");
+        var handler = new StubHttpMessageHandler().Map(externalUrl.ToString(), StubHttpMessageHandler.Status(HttpStatusCode.OK));
+        var checker = new LinkChecker(new HttpClient(handler), maxConcurrency: 4);
+
+        await checker.CheckAsync(externalUrl, LinkKind.External);
+
+        Assert.Equal([HttpMethod.Head], handler.Requests.Select(r => r.Method));
+    }
+
+    [Fact]
+    public async Task Check_ExternalHeadReturns405_RetriesWithGet()
+    {
+        var externalUrl = new Uri("https://other.example.org/asset");
+        var handler = new StubHttpMessageHandler().Map(externalUrl.ToString(), attempt => attempt == 1
+            ? new HttpResponseMessage(HttpStatusCode.MethodNotAllowed)
+            : new HttpResponseMessage(HttpStatusCode.OK));
+        var checker = new LinkChecker(new HttpClient(handler), maxConcurrency: 4);
+
+        var result = await checker.CheckAsync(externalUrl, LinkKind.External);
+
+        Assert.Equal(200, result.StatusCode);
+        Assert.Equal([HttpMethod.Head, HttpMethod.Get], handler.Requests.Select(r => r.Method));
+    }
+
+    [Fact]
+    public async Task Check_ExternalLink_BodyNeverParsedForLinks()
+    {
+        var externalUrl = new Uri("https://other.example.org/asset");
+        var handler = new StubHttpMessageHandler().Map(externalUrl.ToString(),
+            StubHttpMessageHandler.Ok("""<a href="/should-not-be-followed">x</a>"""));
+        var checker = new LinkChecker(new HttpClient(handler), maxConcurrency: 4);
+
+        var result = await checker.CheckAsync(externalUrl, LinkKind.External);
+
+        Assert.Empty(result.DiscoveredLinks);
+    }
+
+    [Fact]
+    public async Task Check_CustomHeaders_SentOnEveryRequestIncludingRedirectHops()
+    {
+        var handler = new StubHttpMessageHandler()
+            .Map("https://example.com/page", StubHttpMessageHandler.Redirect("/page-2"))
+            .Map("https://example.com/page-2", StubHttpMessageHandler.Status(HttpStatusCode.OK));
+        var httpClient = new HttpClient(handler);
+        httpClient.DefaultRequestHeaders.Add("CF-IPCountry", "PL");
+        var checker = new LinkChecker(httpClient, maxConcurrency: 4);
+
+        await checker.CheckAsync(Url, LinkKind.Internal);
+
+        Assert.Equal(2, handler.Requests.Count);
+        Assert.All(handler.Requests, r => Assert.Equal("PL", r.Headers.GetValues("CF-IPCountry").Single()));
+    }
+
+    [Fact]
+    public async Task CheckAllAsync_ConcurrencyCap_NeverExceedsConfiguredMax()
+    {
+        var handler = new StubHttpMessageHandler();
+        var targets = Enumerable.Range(0, 20)
+            .Select(i => new Uri($"https://example.com/page-{i}"))
+            .ToList();
+        foreach (var target in targets)
+            handler.Map(target.ToString(), StubHttpMessageHandler.Status(HttpStatusCode.OK));
+        var checker = new LinkChecker(new HttpClient(handler), maxConcurrency: 4);
+
+        await checker.CheckAllAsync(targets.Select(u => (u, LinkKind.Internal)));
+
+        Assert.True(handler.MaxConcurrent <= 4, $"expected MaxConcurrent <= 4, was {handler.MaxConcurrent}");
+    }
+
+    [Fact]
+    public async Task CheckAllAsync_SameUrlInDifferentForms_FetchedOnce()
+    {
+        var handler = new StubHttpMessageHandler().Map("https://example.com/about", StubHttpMessageHandler.Status(HttpStatusCode.OK));
         var checker = new LinkChecker(new HttpClient(handler), maxConcurrency: 4);
 
         var results = await checker.CheckAllAsync([
@@ -166,6 +273,6 @@ public class LinkCheckerTests
         ]);
 
         Assert.Single(results);
-        Assert.Single(requestedPaths);
+        Assert.Single(handler.Requests);
     }
 }

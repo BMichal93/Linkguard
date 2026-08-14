@@ -10,9 +10,9 @@ public class LinkCheckerDiscoveredLinksTests
     private static readonly Uri Url = new("https://example.com/");
 
     [Fact]
-    public async Task CheckAsync_extracts_links_from_a_successful_internal_html_response()
+    public async Task Check_SuccessfulInternalHtmlResponse_ExtractsLinks()
     {
-        var handler = new StubHttpMessageHandler(_ => StubHttpMessageHandler.Html("""
+        var handler = new StubHttpMessageHandler().Map(Url.ToString(), StubHttpMessageHandler.Ok("""
             <html><body>
               <a href="/about">About</a>
               <a href="https://other.example.org/x">External</a>
@@ -28,21 +28,12 @@ public class LinkCheckerDiscoveredLinksTests
     }
 
     [Fact]
-    public async Task CheckAsync_does_not_extract_links_for_external_checks()
+    public async Task Check_FailedInternalResponse_DoesNotExtractLinks()
     {
-        var handler = new StubHttpMessageHandler(_ => StubHttpMessageHandler.Html("""<a href="/x">x</a>"""));
-        var checker = new LinkChecker(new HttpClient(handler), maxConcurrency: 4);
-
-        var result = await checker.CheckAsync(new Uri("https://other.example.org/"), LinkKind.External);
-
-        Assert.Empty(result.DiscoveredLinks);
-    }
-
-    [Fact]
-    public async Task CheckAsync_does_not_extract_links_from_a_failed_internal_response()
-    {
-        var handler = new StubHttpMessageHandler(_ =>
-            StubHttpMessageHandler.Html("""<a href="/x">x</a>""", HttpStatusCode.NotFound));
+        var handler = new StubHttpMessageHandler().Map(Url.ToString(), _ => new HttpResponseMessage(HttpStatusCode.NotFound)
+        {
+            Content = new StringContent("""<a href="/x">x</a>""", System.Text.Encoding.UTF8, "text/html"),
+        });
         var checker = new LinkChecker(new HttpClient(handler), maxConcurrency: 4);
 
         var result = await checker.CheckAsync(Url, LinkKind.Internal);

@@ -22,4 +22,8 @@
     <ProjectReference Include="..\..\src\LinkGuard\LinkGuard.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <EmbeddedResource Include="Fixtures\**\*" />
+  </ItemGroup>
+
 </Project>
