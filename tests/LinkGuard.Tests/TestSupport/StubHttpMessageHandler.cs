@@ -20,4 +20,11 @@ public sealed class StubHttpMessageHandler(Func<HttpRequestMessage, HttpResponse
         new(status) { Content = new StringContent(body, System.Text.Encoding.UTF8, "text/plain") };
 
     public static HttpResponseMessage Status(System.Net.HttpStatusCode status) => new(status);
+
+    public static HttpResponseMessage Redirect(string location, System.Net.HttpStatusCode status = System.Net.HttpStatusCode.Found)
+    {
+        var response = new HttpResponseMessage(status);
+        response.Headers.Location = new Uri(location, UriKind.RelativeOrAbsolute);
+        return response;
+    }
 }
