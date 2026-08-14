@@ -7,7 +7,7 @@ public static class IgnoreFilter
     public static IReadOnlyList<Uri> Apply(IEnumerable<Uri> urls, IReadOnlyList<string> patterns) =>
         patterns.Count == 0 ? urls.ToList() : urls.Where(u => !Matches(u, patterns)).ToList();
 
-    private static bool Matches(Uri url, IReadOnlyList<string> patterns)
+    public static bool Matches(Uri url, IReadOnlyList<string> patterns)
     {
         var text = url.ToString();
         foreach (var pattern in patterns)

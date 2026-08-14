@@ -72,6 +72,26 @@ public class CrawlSourceTests
     }
 
     [Fact]
+    public async Task Crawl_RespectsIgnorePatterns()
+    {
+        var handler = new StubHttpMessageHandler()
+            .Map("https://example.com/", StubHttpMessageHandler.Ok("""
+                <html><body>
+                  <a href="/blog/post-1">Post 1</a>
+                  <a href="/about">About</a>
+                </body></html>
+                """))
+            .Map("https://example.com/blog/post-1", StubHttpMessageHandler.Ok("""<a href="/blog/post-2">Post 2</a>"""))
+            .Map("https://example.com/about", StubHttpMessageHandler.Ok("leaf"));
+        var source = new CrawlSource(new HttpClient(handler), ["/blog/"]);
+
+        var urls = (await source.DiscoverAsync(BaseUrl)).Select(u => u.AbsolutePath).ToList();
+
+        Assert.Equal(["/", "/about"], urls);
+        Assert.DoesNotContain(handler.Requests, r => r.RequestUri!.AbsolutePath.StartsWith("/blog/"));
+    }
+
+    [Fact]
     public async Task Crawl_NonHtmlResponse_SkipsWithoutThrowing()
     {
         var handler = new StubHttpMessageHandler()

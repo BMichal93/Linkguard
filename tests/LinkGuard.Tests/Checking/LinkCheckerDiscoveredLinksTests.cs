@@ -40,4 +40,18 @@ public class LinkCheckerDiscoveredLinksTests
 
         Assert.Empty(result.DiscoveredLinks);
     }
+
+    [Fact]
+    public async Task Check_NonHtmlContentType_DoesNotExtractLinks()
+    {
+        var handler = new StubHttpMessageHandler().Map(Url.ToString(), _ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent("""<a href="/x">x</a>""", System.Text.Encoding.UTF8, "application/pdf"),
+        });
+        var checker = new LinkChecker(new HttpClient(handler), maxConcurrency: 4);
+
+        var result = await checker.CheckAsync(Url, LinkKind.Internal);
+
+        Assert.Empty(result.DiscoveredLinks);
+    }
 }

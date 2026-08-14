@@ -2,8 +2,10 @@ using LinkGuard.Checking;
 
 namespace LinkGuard.Discovery;
 
-public sealed class CrawlSource(HttpClient httpClient)
+public sealed class CrawlSource(HttpClient httpClient, IReadOnlyList<string>? ignorePatterns = null)
 {
+    private readonly IReadOnlyList<string> _ignorePatterns = ignorePatterns ?? [];
+
     public async Task<IReadOnlyList<Uri>> DiscoverAsync(Uri baseUrl, CancellationToken cancellationToken = default)
     {
         var root = StripFragment(baseUrl);
@@ -26,6 +28,12 @@ public sealed class CrawlSource(HttpClient httpClient)
                     continue;
 
                 var normalized = StripFragment(link);
+
+                // Ignored paths are skipped before enqueueing, not just filtered from the final
+                // list, so the crawl never wastes requests descending into them.
+                if (_ignorePatterns.Count > 0 && IgnoreFilter.Matches(normalized, _ignorePatterns))
+                    continue;
+
                 if (seen.Add(normalized))
                     queue.Enqueue(normalized);
             }

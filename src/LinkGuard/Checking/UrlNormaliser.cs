@@ -4,6 +4,14 @@ namespace LinkGuard.Checking;
 
 public static class UrlNormaliser
 {
+    public static bool IsCheckable(Uri uri) =>
+        uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps;
+
+    // Resolves a possibly-relative href against a base URL before normalising, e.g. "../b"
+    // against "https://example.test/x/y/" resolves to "https://example.test/x/b" first.
+    public static string NormalisedKey(Uri baseUrl, string hrefOrUrl) =>
+        NormalisedKey(new Uri(baseUrl, hrefOrUrl));
+
     public static string NormalisedKey(Uri uri)
     {
         var scheme = uri.Scheme.ToLowerInvariant();

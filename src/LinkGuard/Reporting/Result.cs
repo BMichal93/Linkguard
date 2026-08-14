@@ -30,10 +30,7 @@ public sealed record CheckResult
     // and, for external links, as check targets. Never populated for external checks (one level deep only).
     public IReadOnlyList<Uri> DiscoveredLinks { get; init; } = [];
 
-    // A broken external link warns instead of failing - a third-party site being down at 2am must not block a release.
-    public CheckOutcome Outcome => Error is not null || StatusCode is >= 400
-        ? (Kind == LinkKind.Internal ? CheckOutcome.Fail : CheckOutcome.Warn)
-        : CheckOutcome.Pass;
+    public CheckOutcome Outcome => Classifier.Classify(StatusCode, Error, Kind);
 }
 
 public sealed record LinkGuardReport

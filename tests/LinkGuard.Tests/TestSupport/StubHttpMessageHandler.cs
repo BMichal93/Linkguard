@@ -31,17 +31,16 @@ public sealed class StubHttpMessageHandler : HttpMessageHandler
 
     public StubHttpMessageHandler Map(string url, HttpResponseMessage response) => Map(url, _ => response);
 
-    protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+    // Deliberately synchronous (no artificial Task.Yield): genuine overlap for the
+    // MaxConcurrent test comes from CheckAllAsync's semaphore-gated dispatch loop, which
+    // bursts maxConcurrency Task.Run calls before blocking - it doesn't need help here, and
+    // an injected yield interacts badly with FakeTimeProvider-driven retry-backoff tests.
+    protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
     {
         TrackRequest(request);
-
-        // A yield forces a real scheduling gap, so concurrent callers actually overlap here
-        // instead of running the dispatch loop to completion one at a time. No wall-clock wait.
         TrackInFlightStart();
         try
         {
-            await Task.Yield();
-
             var key = UrlNormaliser.NormalisedKey(request.RequestUri!);
             int attempt;
             lock (_gate)
@@ -50,9 +49,9 @@ public sealed class StubHttpMessageHandler : HttpMessageHandler
             }
 
             if (!_routes.TryGetValue(key, out var factory))
-                return new HttpResponseMessage(HttpStatusCode.NotFound);
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.NotFound));
 
-            return factory(attempt);
+            return Task.FromResult(factory(attempt));
         }
         finally
         {

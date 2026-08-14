@@ -50,4 +50,34 @@ public class JUnitReporterTests
             File.Delete(path);
         }
     }
+
+    [Fact]
+    public void Write_UrlWithAmpersandInQueryString_IsEscapedAndParsesAsValidXml()
+    {
+        var url = new Uri("https://example.com/search?a=1&b=2");
+        var report = new LinkGuardReport
+        {
+            Results = [new CheckResult { Url = url, Kind = LinkKind.Internal, StatusCode = 404 }],
+            Referrers = new Dictionary<string, IReadOnlyList<Uri>>(),
+            Duration = TimeSpan.Zero,
+        };
+
+        var path = Path.Combine(Path.GetTempPath(), $"linkguard-{Guid.NewGuid():N}.xml");
+        try
+        {
+            JUnitReporter.Write(report, path);
+
+            var rawXml = File.ReadAllText(path);
+            Assert.Contains("a=1&amp;b=2", rawXml);
+
+            // XDocument.Load would throw on unescaped "&" - this is the real assertion.
+            var document = XDocument.Load(path);
+            var testCase = document.Root!.Elements("testcase").Single();
+            Assert.Equal(url.ToString(), testCase.Attribute("name")!.Value);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
 }

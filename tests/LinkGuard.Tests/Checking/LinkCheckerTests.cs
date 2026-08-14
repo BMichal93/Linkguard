@@ -2,6 +2,7 @@ using System.Net;
 using LinkGuard.Checking;
 using LinkGuard.Reporting;
 using LinkGuard.Tests.TestSupport;
+using Microsoft.Extensions.Time.Testing;
 
 namespace LinkGuard.Tests.Checking;
 
@@ -69,6 +70,31 @@ public class LinkCheckerTests
 
         Assert.Equal(200, result.StatusCode);
         Assert.Equal(2, result.Attempts);
+    }
+
+    [Fact]
+    public async Task Check_RetriesUseBackoff_AdvancesTimeProviderNotWallClock()
+    {
+        var timeProvider = new FakeTimeProvider();
+        var handler = new StubHttpMessageHandler().Map(Url.ToString(), StubHttpMessageHandler.FailThenOk(failCount: 2));
+        var checker = new LinkChecker(new HttpClient(handler), maxConcurrency: 4, timeProvider);
+
+        var task = checker.CheckAsync(Url, LinkKind.Internal);
+
+        // Nudge the fake clock forward past the pending retry delays. Task.Yield lets queued
+        // continuations run without any real wall-clock wait. The delays themselves resolve
+        // within a handful of rounds; the final WaitAsync is just a deadlock safety net for
+        // the remaining (non-time-based) async work, not the retry mechanism under test.
+        for (var round = 0; round < 20 && !task.IsCompleted; round++)
+        {
+            timeProvider.Advance(TimeSpan.FromMilliseconds(500));
+            await Task.Yield();
+        }
+
+        var result = await task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Equal(200, result.StatusCode);
+        Assert.Equal(3, result.Attempts);
     }
 
     [Fact]

@@ -5,10 +5,12 @@ using LinkGuard.Reporting;
 
 namespace LinkGuard.Checking;
 
-public sealed class LinkChecker(HttpClient httpClient, int maxConcurrency)
+public sealed class LinkChecker(HttpClient httpClient, int maxConcurrency, TimeProvider? timeProvider = null)
 {
     private const int MaxRedirectHops = 5;
     private const int MaxAttempts = 3; // one initial attempt plus two retries
+
+    private readonly TimeProvider _timeProvider = timeProvider ?? TimeProvider.System;
 
     public static HttpClient CreateHttpClient(Options options)
     {
@@ -222,10 +224,11 @@ public sealed class LinkChecker(HttpClient httpClient, int maxConcurrency)
         return await httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
     }
 
-    private static Task DelayBeforeRetry(int attempt, CancellationToken cancellationToken)
+    private Task DelayBeforeRetry(int attempt, CancellationToken cancellationToken)
     {
         var jitterMs = Random.Shared.Next(0, 250);
-        return Task.Delay(TimeSpan.FromMilliseconds(200 * attempt + jitterMs), cancellationToken);
+        var delay = TimeSpan.FromMilliseconds(200 * attempt + jitterMs);
+        return Task.Delay(delay, _timeProvider, cancellationToken);
     }
 
     private static string ClassifyHttpError(HttpRequestException ex) => ex.HttpRequestError switch
